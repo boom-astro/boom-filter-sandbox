@@ -7,6 +7,7 @@ import { Plus, GitBranch, Trash2 } from "lucide-react";
 import type { FilterBlock, FilterNode, FieldOption } from "@/lib/filterSchema";
 import { createEmptyCondition, createEmptyBlock } from "@/lib/filterSchema";
 import { ConditionRow } from "./ConditionRow";
+import { ExpressionRow } from "./ExpressionRow";
 
 interface BlockNodeProps {
   block: FilterBlock;
@@ -92,6 +93,16 @@ export function BlockNode({ block, fieldOptions, onChange, onRemove, isRoot = fa
                 condition={child}
                 fieldOptions={fieldOptions}
                 onChange={(updated) => updateChild(i, updated)}
+                onRemove={() => removeChild(i)}
+                removable={block.children.length > 1}
+              />
+            );
+          }
+          if (child.category === "expression") {
+            return (
+              <ExpressionRow
+                key={child.id}
+                expression={child}
                 onRemove={() => removeChild(i)}
                 removable={block.children.length > 1}
               />

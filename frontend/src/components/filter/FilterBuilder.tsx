@@ -31,6 +31,8 @@ interface FilterBuilderProps {
 /** Methods exposed via ref */
 export interface FilterBuilderHandle {
   addConditionWithField: (field: string) => void;
+  /** Replace the current tree with a preset and show it in the visual builder. */
+  loadFilterTree: (blocks: FilterBlock[]) => void;
 }
 
 export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>(function FilterBuilder({
@@ -66,6 +68,10 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
         return prev;
       });
       // Switch to visual mode if in advanced
+      setMode("visual");
+    },
+    loadFilterTree(blocks: FilterBlock[]) {
+      setFilters(blocks);
       setMode("visual");
     },
   }), []);

@@ -4,6 +4,45 @@
  * This is used when the BOOM API schema endpoint is unreachable.
  */
 
+/** Light-curve fit statistics (mirrors `BandRateProperties` in src/utils/lightcurves.rs). */
+const bandRateProperties = (band: string, name: string) => ({
+  name,
+  type: [
+    "null",
+    {
+      type: "record",
+      name: `BandRateProperties_${band}_${name}`,
+      fields: [
+        { name: "rate", type: "float" },
+        { name: "rate_error", type: "float" },
+        { name: "red_chi2", type: "float" },
+        { name: "nb_data", type: "int" },
+        { name: "dt", type: "float" },
+      ],
+    },
+  ],
+});
+
+/** Per-band light-curve statistics (mirrors `BandProperties` in src/utils/lightcurves.rs). */
+const bandProperties = (band: string) => ({
+  name: band,
+  type: [
+    "null",
+    {
+      type: "record",
+      name: `BandProperties_${band}`,
+      fields: [
+        { name: "peak_jd", type: "double" },
+        { name: "peak_mag", type: "float" },
+        { name: "peak_mag_err", type: "float" },
+        { name: "dt", type: "float" },
+        bandRateProperties(band, "rising"),
+        bandRateProperties(band, "fading"),
+      ],
+    },
+  ],
+});
+
 export const ZTF_FALLBACK_SCHEMA = {
   type: "record",
   name: "ZtfAlertToFilter",
@@ -22,7 +61,7 @@ export const ZTF_FALLBACK_SCHEMA = {
           { name: "diffmaglim", type: ["null", "float"] },
           { name: "programid", type: "int" },
           { name: "candid", type: "long" },
-          { name: "isdiffpos", type: "string" },
+          { name: "isdiffpos", type: ["null", "boolean"] },
           { name: "nid", type: ["null", "int"] },
           { name: "distnr", type: ["null", "float"] },
           { name: "magnr", type: ["null", "float"] },
@@ -45,6 +84,7 @@ export const ZTF_FALLBACK_SCHEMA = {
           { name: "ssmagnr", type: ["null", "float"] },
           { name: "rb", type: ["null", "float"] },
           { name: "drb", type: ["null", "float"] },
+          { name: "nbad", type: ["null", "int"] },
           { name: "ndethist", type: "int" },
           { name: "ncovhist", type: "int" },
           { name: "jdstarthist", type: ["null", "double"] },
@@ -118,6 +158,14 @@ export const ZTF_FALLBACK_SCHEMA = {
           { name: "star", type: "boolean" },
           { name: "near_brightstar", type: "boolean" },
           { name: "stationary", type: "boolean" },
+          {
+            name: "photstats",
+            type: {
+              type: "record",
+              name: "PerBandProperties",
+              fields: ["g", "r", "i"].map(bandProperties),
+            },
+          },
         ],
       },
     },

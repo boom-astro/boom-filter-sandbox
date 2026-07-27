@@ -3,7 +3,15 @@
  * Ported from Fritz's mongoPipelineBuilder.js.
  */
 
-import type { FilterNode, FilterBlock, FilterCondition } from "./filterSchema";
+import type { FilterNode, FilterBlock, FilterCondition, FilterExpression } from "./filterSchema";
+
+/**
+ * Convert a raw expression node into a MongoDB `$expr` match expression.
+ */
+function expressionToMongo(node: FilterExpression): Record<string, unknown> | null {
+  if (!node.expr || Object.keys(node.expr).length === 0) return null;
+  return { $expr: node.expr };
+}
 
 /**
  * Convert a single condition into a MongoDB match expression.
@@ -56,6 +64,9 @@ function blockToMongo(block: FilterBlock): Record<string, unknown> | null {
     if (child.category === "condition") {
       const expr = conditionToMongo(child);
       if (expr) childExprs.push(expr);
+    } else if (child.category === "expression") {
+      const expr = expressionToMongo(child);
+      if (expr) childExprs.push(expr);
     } else if (child.category === "block") {
       const expr = blockToMongo(child);
       if (expr) childExprs.push(expr);
@@ -106,6 +117,9 @@ export function convertToMongoPipeline(
       if (expr) matchExprs.push(expr);
     } else if (root.category === "condition") {
       const expr = conditionToMongo(root);
+      if (expr) matchExprs.push(expr);
+    } else if (root.category === "expression") {
+      const expr = expressionToMongo(root);
       if (expr) matchExprs.push(expr);
     }
   }

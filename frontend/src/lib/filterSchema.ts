@@ -12,6 +12,21 @@ export interface FilterCondition {
   value: string | number | boolean;
 }
 
+/**
+ * A raw MongoDB `$expr` condition — comparisons between two fields, or any
+ * computation the field/operator/value form can't express (e.g. `|a - b| < c`).
+ * Rendered read-only in the visual builder so such filters survive a round trip
+ * instead of being silently dropped.
+ */
+export interface FilterExpression {
+  id: string;
+  category: "expression";
+  /** Human-readable summary shown in the visual builder */
+  label: string;
+  /** The aggregation expression placed inside `{ $expr: ... }` */
+  expr: Record<string, unknown>;
+}
+
 /** A logical block containing children joined by AND / OR */
 export interface FilterBlock {
   id: string;
@@ -20,8 +35,8 @@ export interface FilterBlock {
   children: FilterNode[];
 }
 
-/** A node in the filter tree is either a block or a condition */
-export type FilterNode = FilterBlock | FilterCondition;
+/** A node in the filter tree is a block, a condition, or a raw expression */
+export type FilterNode = FilterBlock | FilterCondition | FilterExpression;
 
 /** Flattened field option derived from the Avro schema */
 export interface FieldOption {
@@ -54,6 +69,10 @@ export function createEmptyCondition(): FilterCondition {
     operator: "$gt",
     value: "",
   };
+}
+
+export function createExpression(label: string, expr: Record<string, unknown>): FilterExpression {
+  return { id: generateId("expr"), category: "expression", label, expr };
 }
 
 export function createEmptyBlock(op: "and" | "or" = "and"): FilterBlock {

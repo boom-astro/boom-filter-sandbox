@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Sparkles } from "lucide-react";
 import { FilterBuilder } from "@/components/filter/FilterBuilder";
 import type { FilterBuilderHandle } from "@/components/filter/FilterBuilder";
 import { FilterFieldBrowser } from "@/components/filter/FilterFieldBrowser";
@@ -18,6 +18,7 @@ import { toJd, jdToFormatString, type TimeFormat } from "@/lib/time";
 import { flattenAvroSchema } from "@/lib/filterConstants";
 import api, { type FilterTestParams, type FilterTestCountResult, type AvroSchema } from "@/lib/api";
 import { ZTF_FALLBACK_SCHEMA } from "@/lib/ztfFallbackSchema";
+import { FAST_FADING_FILTER, FAST_FADING_JD_RANGE } from "@/lib/examplePipelines";
 
 const DEFAULT_PIPELINE = `[
   {
@@ -184,6 +185,19 @@ export default function Filters() {
     setTimeFormat(next);
   }
 
+  // One-click preset: load the "fast fading transient" example filter and its time window.
+  function handleLoadExample() {
+    setSurvey("ZTF");
+    // The builder syncs the generated pipeline text back to us via onRawPipelineChange.
+    filterBuilderRef.current?.loadFilterTree(FAST_FADING_FILTER);
+    setTimeFormat("jd");
+    setStartTime(FAST_FADING_JD_RANGE.start);
+    setEndTime(FAST_FADING_JD_RANGE.end);
+    setCountResult(null);
+    setError(null);
+    setActiveTab("editor");
+  }
+
   function buildParams(pipeline: Record<string, unknown>[]): FilterTestParams {
     const params: FilterTestParams = {
       pipeline,
@@ -275,6 +289,17 @@ export default function Filters() {
             <CardHeader>
               <CardTitle>Filter Tester</CardTitle>
               <CardDescription>Build and test MongoDB aggregation pipelines against live alert data.</CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={handleLoadExample}
+                  title="Load a ready-made fast-fading transient filter (JD 2460478 – 2460490)"
+                >
+                  <Sparkles className="h-3 w-3 mr-1" /> ZTF Summer School filter
+                </Button>
+              </CardAction>
             </CardHeader>
             <CardContent>
               <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "editor" | "results")}>

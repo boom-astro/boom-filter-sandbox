@@ -19,16 +19,21 @@ interface ConditionRowProps {
 }
 
 export function ConditionRow({ condition, fieldOptions, onChange, onRemove, removable }: ConditionRowProps) {
+  // Keep the selected field visible even when it isn't in the schema
+  // (e.g. a preset loaded before the schema arrived, or an older schema).
+  const selectedField = fieldOptions.find((f) => f.label === condition.field);
+  const options: FieldOption[] = selectedField || !condition.field
+    ? fieldOptions
+    : [...fieldOptions, { label: condition.field, type: "number", group: "Custom" }];
+
   // Group field options by their group name
   const grouped = new Map<string, FieldOption[]>();
-  for (const opt of fieldOptions) {
+  for (const opt of options) {
     const group = opt.group;
     if (!grouped.has(group)) grouped.set(group, []);
     grouped.get(group)!.push(opt);
   }
 
-  // Find the currently selected field's type to filter operators
-  const selectedField = fieldOptions.find((f) => f.label === condition.field);
   const fieldType = selectedField?.type ?? "number";
   const availableOps = OPERATORS.filter((op) => op.applicableTo.includes(fieldType as "number" | "string" | "boolean"));
 
