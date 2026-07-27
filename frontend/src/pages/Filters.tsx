@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, Sparkles } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 import { FilterBuilder } from "@/components/filter/FilterBuilder";
 import type { FilterBuilderHandle } from "@/components/filter/FilterBuilder";
 import { FilterFieldBrowser } from "@/components/filter/FilterFieldBrowser";
@@ -124,15 +124,28 @@ export default function Filters() {
   const [timeFormat, setTimeFormat] = useState<TimeFormat>("jd");
   const [startTime, setStartTime] = useState("2461138.5");
   const [endTime, setEndTime] = useState("2461140.5");
-  const [limit, setLimit] = useState("10");
+  // Page size, also the API's `limit`. Paging is done with a $skip stage — see buildParams.
+  const [pageSize, setPageSize] = useState("30");
 
   // Ref for FilterBuilder imperative handle
   const filterBuilderRef = useRef<FilterBuilderHandle>(null);
+  // Scroll anchor so a new page starts at the top of the list, not wherever the last one ended.
+  const resultsTopRef = useRef<HTMLDivElement>(null);
+
+  // Any change to the query invalidates the known total and the page we are on:
+  // offsets only mean something relative to the query that produced them.
+  function resetPaging() {
+    setCountResult(null);
+    setPage(0);
+    setHasMore(false);
+  }
 
   // Stable callback for FilterBuilder
   const handlePipelineTextChange = useCallback((text: string) => {
     setPipelineText(text);
     setCountResult(null);
+    setPage(0);
+    setHasMore(false);
   }, []);
 
   // Schema state
@@ -151,6 +164,9 @@ export default function Filters() {
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [queryTimeMs, setQueryTimeMs] = useState<number | null>(null);
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
+  // 0-based index of the page currently displayed, and whether a next one may exist.
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [countLoading, setCountLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,7 +196,7 @@ export default function Filters() {
     null;
 
   function handleTimeChange(setter: (v: string) => void) {
-    return (v: string) => { setter(v); setCountResult(null); };
+    return (v: string) => { setter(v); resetPaging(); };
   }
 
   // Keep the instant the user picked when the display format changes.
@@ -198,20 +214,38 @@ export default function Filters() {
     setTimeFormat("jd");
     setStartTime(FAST_FADING_JD_RANGE.start);
     setEndTime(FAST_FADING_JD_RANGE.end);
-    setCountResult(null);
+    resetPaging();
     setError(null);
     setActiveTab("editor");
   }
 
-  function buildParams(pipeline: Record<string, unknown>[]): FilterTestParams {
+  // `paged` adds the $sort/$skip stages that page through the matches. The API appends its
+  // own $limit at the very end and requires the pipeline to still end on the $project, so
+  // both go just before that last stage. Count requests stay unpaged: sorting them is pure
+  // cost, and a $skip would make the total wrong.
+  function buildParams(
+    pipeline: Record<string, unknown>[],
+    { skip = 0, paged = false }: { skip?: number; paged?: boolean } = {},
+  ): FilterTestParams {
+    // Paging needs a total order, otherwise the same offset can repeat or skip alerts from
+    // one page to the next. candidate.jd alone isn't one — a whole exposure shares a single
+    // jd — so _id (the candid, unique) breaks the ties.
+    const staged = paged
+      ? [
+          ...pipeline.slice(0, -1),
+          { $sort: { "candidate.jd": 1, _id: 1 } },
+          ...(skip > 0 ? [{ $skip: skip }] : []),
+          pipeline[pipeline.length - 1],
+        ]
+      : pipeline;
     const params: FilterTestParams = {
-      pipeline,
+      pipeline: staged,
       survey,
       permissions: { [survey]: [1] },
     };
     if (startJd !== undefined) params.start_jd = startJd;
     if (endJd !== undefined) params.end_jd = endJd;
-    if (limit) params.limit = parseInt(limit, 10);
+    if (pageSize) params.limit = parseInt(pageSize, 10);
     return params;
   }
 
@@ -246,12 +280,14 @@ export default function Filters() {
     }
   }
 
-  async function handleRunFilter() {
+  // Fetch one page of results. `nextPage` is 0-based.
+  async function runFilter(nextPage: number) {
     const { valid, error: validationError, pipeline } = validatePipeline(pipelineText);
     if (!valid || !pipeline) {
       setError(validationError);
       return;
     }
+    const size = parseInt(pageSize, 10) || 0;
     setError(null);
     setLoading(true);
     setResults([]);
@@ -259,18 +295,22 @@ export default function Filters() {
     setQueryTimeMs(null);
     const t0 = performance.now();
     try {
-      const params = buildParams(pipeline);
+      const params = buildParams(pipeline, { skip: nextPage * size, paged: true });
       const data = await api.fetchFilterTest(params);
       // Disabled for now: this doubles query cost by re-running an unindexed
       // COLLSCAN over the same jd window just to show total-in-window context.
       // await fetchTotalForWindow();
       setQueryTimeMs(Math.round(performance.now() - t0));
       setResults(data);
-      // Also set the count from results length if we didn't already have it
-      if (!countResult) {
+      setPage(nextPage);
+      // A short page means the matches ran out, so there is nothing after this one.
+      setHasMore(size > 0 && data.length === size);
+      // A single short first page tells us the exact total without a Count query.
+      if (!countResult && nextPage === 0 && (size === 0 || data.length < size)) {
         setCountResult({ count: data.length, pipeline });
       }
       setActiveTab("results");
+      resultsTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       setError(friendlyError(err, "Filter test failed"));
     } finally {
@@ -283,6 +323,18 @@ export default function Filters() {
   useEffect(() => { cutoutCache.current.clear(); }, [results]);
   const getCutoutCache = useCallback((candid: string) => cutoutCache.current.get(candid), []);
   const setCutoutCache = useCallback((candid: string, data: Cutouts) => { cutoutCache.current.set(candid, data); }, []);
+
+  // Pager labels. `offset` is 0 whenever the page size is unusable, in which case
+  // runFilter never leaves page 0 either.
+  const parsedPageSize = parseInt(pageSize, 10) || 0;
+  const offset = parsedPageSize > 0 ? page * parsedPageSize : 0;
+  const firstShown = offset + 1;
+  const lastShown = offset + results.length;
+  // Only known once a Count (or a short first page) gave us the real total.
+  const totalPages = countResult && parsedPageSize > 0
+    ? Math.max(1, Math.ceil(countResult.count / parsedPageSize))
+    : null;
+  const canGoNext = hasMore && (totalPages === null || page + 1 < totalPages);
 
   return (
     <div className="px-4 lg:px-6 space-y-4">
@@ -299,7 +351,7 @@ export default function Filters() {
                   size="sm"
                   className="h-7 text-xs"
                   onClick={handleLoadExample}
-                  title="Load a ready-made fast-fading transient filter (JD 2460478 – 2460490)"
+                  title="Load a ready-made fast-fading transient filter (JD 2460483 – 2460490)"
                 >
                   <Sparkles className="h-3 w-3 mr-1" /> ZTF Summer School filter
                 </Button>
@@ -324,7 +376,7 @@ export default function Filters() {
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                       <div className="sm:col-span-4">
                         <Label className="text-xs font-medium mb-1 block text-muted-foreground">Survey</Label>
-                        <Select value={survey} onValueChange={(v) => { setSurvey(v as "ZTF" | "LSST"); setCountResult(null); }}>
+                        <Select value={survey} onValueChange={(v) => { setSurvey(v as "ZTF" | "LSST"); resetPaging(); }}>
                           <SelectTrigger className="w-full">
                             <SelectValue />
                           </SelectTrigger>
@@ -378,8 +430,16 @@ export default function Filters() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                       <div className="sm:col-span-2">
-                        <Label htmlFor="limit" className="text-xs font-medium mb-1 block text-muted-foreground">Result Limit</Label>
-                        <Input id="limit" type="number" value={limit} onChange={(e) => { setLimit(e.target.value); setCountResult(null); }} placeholder="10" />
+                        <Label htmlFor="pageSize" className="text-xs font-medium mb-1 block text-muted-foreground">Results per page</Label>
+                        <Input
+                          id="pageSize"
+                          type="number"
+                          min={1}
+                          value={pageSize}
+                          // Offsets from the previous page size no longer line up.
+                          onChange={(e) => { setPageSize(e.target.value); resetPaging(); }}
+                          placeholder="30"
+                        />
                       </div>
                     </div>
 
@@ -391,7 +451,7 @@ export default function Filters() {
                       <Button variant="outline" onClick={handleCount} disabled={countLoading}>
                         {countLoading ? "Counting..." : "Count"}
                       </Button>
-                      <Button onClick={handleRunFilter} disabled={loading}>
+                      <Button onClick={() => runFilter(0)} disabled={loading}>
                         {loading ? "Running..." : "Run Filter"}
                       </Button>
                     </div>
@@ -405,6 +465,7 @@ export default function Filters() {
                 </TabsContent>
 
                 <TabsContent value="results" forceMount className={activeTab !== "results" ? "hidden" : undefined}>
+                  <div ref={resultsTopRef} className="scroll-mt-4" />
                   {loading && (
                     <div className="space-y-2">
                       {[1, 2, 3, 4, 5].map((i) => (
@@ -424,7 +485,7 @@ export default function Filters() {
                   {!loading && !error && (results.length > 0 || countResult) && (
                     <div className="mb-4">
                       <FilterHealthPanel
-                        matchedCount={countResult?.count ?? results.length}
+                        matchedCount={countResult?.count ?? lastShown}
                         totalCount={totalCount}
                         totalCountLoading={totalCountLoading}
                         results={results}
@@ -442,16 +503,48 @@ export default function Filters() {
                           survey={survey}
                           getCache={getCutoutCache}
                           setCache={setCutoutCache}
-                          expandable
+                          showLightcurve
                         />
                       ))}
-                      <div className="text-sm text-muted-foreground mt-3">
-                        Showing {results.length} result{results.length !== 1 ? "s" : ""}.
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <div className="text-sm text-muted-foreground" title="Sorted by candidate.jd, then candid — a stable order is what makes paging exact">
+                          Showing {firstShown}–{lastShown}
+                          {countResult ? ` of ${countResult.count}` : ""}
+                          {totalPages ? ` · page ${page + 1} of ${totalPages}` : ` · page ${page + 1}`}
+                          {" · oldest first"}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => runFilter(page - 1)}
+                            disabled={loading || page === 0}
+                          >
+                            <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => runFilter(page + 1)}
+                            disabled={loading || !canGoNext}
+                          >
+                            Next <ChevronRight className="h-4 w-4 ml-1" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   )}
 
-                  {!loading && !error && results.length === 0 && !countResult && (
+                  {!loading && !error && results.length === 0 && page > 0 && (
+                    <div className="text-center text-muted-foreground py-8 space-y-3">
+                      <div>No more results past page {page}.</div>
+                      <Button variant="outline" size="sm" onClick={() => runFilter(page - 1)} disabled={loading}>
+                        <ChevronLeft className="h-4 w-4 mr-1" /> Previous page
+                      </Button>
+                    </div>
+                  )}
+
+                  {!loading && !error && results.length === 0 && page === 0 && !countResult && (
                     <div className="text-center text-muted-foreground py-8">
                       No results yet. Write a pipeline and click "Run Filter" to see matching alerts.
                     </div>

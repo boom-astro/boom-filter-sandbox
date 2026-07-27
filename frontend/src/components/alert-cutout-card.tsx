@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
-import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import api, { ApiObject, Cutouts } from "@/lib/api";
 import { bytes2image } from "@/lib/imageProcessing";
@@ -17,19 +17,21 @@ export type AlertCardData = {
   drb?: number | null;
 };
 
-export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, scrollRoot, getCache, setCache, expandable = false }: {
+export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, scrollRoot, getCache, setCache, showLightcurve = false }: {
   alert: AlertCardData;
   survey: "ZTF" | "LSST";
   scrollRoot?: React.RefObject<HTMLDivElement | null>;
   getCache: (candid: string) => Cutouts | undefined;
   setCache: (candid: string, data: Cutouts) => void;
-  // When true, clicking the card expands an inline lightcurve (photometry) panel
-  // instead of opening the object page in a new tab. Used on the Filters page,
-  // where scanning many results in-place matters more than the deep-dive object page.
-  expandable?: boolean;
+  // When true, the card always renders the object's photometry (lightcurve) below
+  // the cutout row. Used on the Filters page, where scanning candidates means
+  // judging the lightcurve at a glance. Clicking the card still opens the object page.
+  showLightcurve?: boolean;
 }) {
   const [cutouts, setCutouts] = useState<Cutouts | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Drives lazy work that must only happen on-screen (cutouts, photometry fetch/render).
+  const [isVisible, setIsVisible] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   // Incremented on every exit or unmount to invalidate in-flight fetches.
   const fetchVersion = useRef(0);
@@ -52,10 +54,13 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
           // Leaving the viewport: invalidate any in-flight fetch and drop rendered data.
           // The raw bytes remain in the shared cache for instant restore on re-entry.
           fetchVersion.current++;
+          setIsVisible(false);
           setIsLoading(false);
           setCutouts(null);
           return;
         }
+
+        setIsVisible(true);
 
         // Entering the viewport: restore from cache or fetch for the first time.
         const cached = getCache(cacheKey);
@@ -109,38 +114,32 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
     };
   }, [cutouts, survey]);
 
-  // Inline lightcurve panel (Filters page only — see `expandable`). Fetched once,
-  // lazily, the first time the card is expanded.
-  const [expanded, setExpanded] = useState(false);
+  // Inline lightcurve panel (see `showLightcurve`). Fetched once, lazily, the first
+  // time the card scrolls into view — never all at once for a whole result page.
   const [objectDetail, setObjectDetail] = useState<ApiObject | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  // Tracks which object the fetch above was for, so scrolling in and out doesn't refetch
+  // but a card reused for another object does.
+  const detailKey = useRef<string | null>(null);
 
-  const openObjectPage = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!alert.objectId) return;
-    window.open(`/objects/${encodeURIComponent(survey)}/${encodeURIComponent(alert.objectId)}`, "_blank");
-  }, [survey, alert.objectId]);
+  useEffect(() => {
+    if (!showLightcurve || !isVisible || !alert.objectId) return;
+    const key = `${survey}:${alert.objectId}`;
+    if (detailKey.current === key) return;
+    detailKey.current = key;
+    let cancelled = false;
+    setObjectDetail(null);
+    setDetailError(false);
+    api.fetchObject(survey, alert.objectId)
+      .then((data) => { if (!cancelled) setObjectDetail(data); })
+      .catch(() => { if (!cancelled) setDetailError(true); });
+    return () => { cancelled = true; };
+  }, [showLightcurve, isVisible, survey, alert.objectId]);
 
   const handleRowClick = useCallback(() => {
     if (!alert.objectId) return;
-    if (!expandable) {
-      window.open(`/objects/${encodeURIComponent(survey)}/${encodeURIComponent(alert.objectId)}`, "_blank");
-      return;
-    }
-    setExpanded((prev) => {
-      const next = !prev;
-      if (next && objectDetail === null && !loadingDetail) {
-        setLoadingDetail(true);
-        setDetailError(false);
-        api.fetchObject(survey, alert.objectId!)
-          .then(setObjectDetail)
-          .catch(() => setDetailError(true))
-          .finally(() => setLoadingDetail(false));
-      }
-      return next;
-    });
-  }, [survey, alert.objectId, expandable, objectDetail, loadingDetail]);
+    window.open(`/objects/${encodeURIComponent(survey)}/${encodeURIComponent(alert.objectId)}`, "_blank");
+  }, [survey, alert.objectId]);
 
   // Compact triplet for the collapsed row.
   const rowCutouts = (() => {
@@ -207,28 +206,23 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
           {alert.band !== undefined && <div><span className="text-muted-foreground">Band:</span> <span className="font-mono">{alert.band}</span></div>}
           {alert.band === undefined && alert.fid !== undefined && <div><span className="text-muted-foreground">Band:</span> <span className="font-mono">{alert.fid}</span></div>}
         </div>
-        {expandable && alert.objectId && (
-          <div className="flex flex-col items-center gap-2 shrink-0 self-start">
-            <button
-              onClick={openObjectPage}
-              title="Open object page"
-              className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
-            >
-              <ExternalLink className="h-4 w-4" />
-            </button>
-            {expanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+        {alert.objectId && (
+          <div className="shrink-0 self-start" title="Open object page">
+            <ExternalLink className="h-4 w-4 text-muted-foreground" />
           </div>
         )}
       </div>
-      {expandable && expanded && (
+      {showLightcurve && alert.objectId && (
+        // Interactive plot (zoom, band toggles) — clicks here must not open the object page.
         <div className="border-t p-4" onClick={(e) => e.stopPropagation()}>
-          {loadingDetail ? (
-            <Skeleton className="h-[220px] w-full" />
-          ) : detailError ? (
+          {detailError ? (
             <div className="text-sm text-muted-foreground">Failed to load photometry for this object.</div>
           ) : objectDetail ? (
+            // Kept mounted once loaded — unmounting off-screen would make the list jump while scrolling.
             <Lightcurve data={objectDetail} height="220px" />
-          ) : null}
+          ) : (
+            <Skeleton className="h-[220px] w-full" />
+          )}
         </div>
       )}
     </div>

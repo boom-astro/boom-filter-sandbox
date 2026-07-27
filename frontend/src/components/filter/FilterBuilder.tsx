@@ -7,10 +7,11 @@
 
 import { useState, useMemo, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { Button } from "@/components/ui/button";
-import { Code, Layers, ArrowUpDown } from "lucide-react";
+import { Code, Layers, ArrowUpDown, AlertTriangle } from "lucide-react";
 import type { FilterBlock, FilterNode, FieldOption } from "@/lib/filterSchema";
 import { createDefaultFilter } from "@/lib/filterSchema";
 import { convertToMongoPipeline, formatPipeline } from "@/lib/mongoPipelineBuilder";
+import { parseMongoPipeline } from "@/lib/mongoPipelineParser";
 import { flattenAvroSchema } from "@/lib/filterConstants";
 import { BlockNode } from "./BlockNode";
 import { MongoPreview } from "./MongoPreview";
@@ -44,6 +45,9 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
   const [filters, setFilters] = useState<FilterBlock[]>(createDefaultFilter);
   const [mode, setMode] = useState<"visual" | "advanced">("visual");
   const [importExportOpen, setImportExportOpen] = useState(false);
+  // Why the raw JSON couldn't be turned into a tree, and what the conversion cost.
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [parseWarnings, setParseWarnings] = useState<string[]>([]);
 
   // Expose addConditionWithField to parent via ref
   useImperativeHandle(ref, () => ({
@@ -72,6 +76,8 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
     },
     loadFilterTree(blocks: FilterBlock[]) {
       setFilters(blocks);
+      setParseError(null);
+      setParseWarnings([]);
       setMode("visual");
     },
   }), []);
@@ -99,6 +105,8 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
 
   // Update a root block
   const updateRoot = useCallback((index: number, updated: FilterNode) => {
+    // Notes from the last import describe the filter as it was imported, not as it is now.
+    setParseWarnings([]);
     setFilters((prev) => {
       const next = [...prev];
       next[index] = updated as FilterBlock;
@@ -106,39 +114,72 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
     });
   }, []);
 
-  const toggleMode = () => {
-    if (mode === "visual") {
-      // Switching to advanced: sync current pipeline text
-      onRawPipelineChange(pipelineText);
-    }
-    setMode((m) => (m === "visual" ? "advanced" : "visual"));
-  };
-
-  // Import: try to parse raw JSON back into filter tree
+  // Import: accept either a block/condition tree (SkyPortal format) or a raw MongoDB
+  // pipeline, and say why when neither works — a silent no-op reads as a broken button.
   const handleImportFromJson = useCallback((json: string) => {
     try {
       const parsed = JSON.parse(json);
-      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].category === "block") {
-        // This is a block/condition tree (SkyPortal format)
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.category === "block") {
         setFilters(parsed as FilterBlock[]);
+        setParseError(null);
+        setParseWarnings([]);
         setMode("visual");
         return true;
       }
     } catch {
-      // Not valid JSON
+      // Not JSON at all — parseMongoPipeline below reports it.
     }
-    return false;
+
+    const result = parseMongoPipeline(json);
+    if (!result.ok) {
+      setParseError(result.error);
+      return false;
+    }
+    setFilters(result.blocks);
+    setParseWarnings(result.warnings);
+    setParseError(null);
+    setMode("visual");
+    return true;
   }, []);
+
+  const toggleMode = () => {
+    if (mode === "visual") {
+      // Switching to advanced: the tree stays as it is, the raw text takes over.
+      onRawPipelineChange(pipelineText);
+      setParseError(null);
+      setParseWarnings([]);
+      setMode("advanced");
+      return;
+    }
+    // Switching back: the raw JSON is what the user has been editing, so it — not the
+    // stale tree — is the source of truth. Refuse rather than show a filter that lies.
+    handleImportFromJson(rawPipelineText);
+  };
+
+  // Escape hatch when the pipeline can't be represented: keep the tree, drop the raw edits.
+  // The tree's own pipeline is pushed up right away — otherwise "discard" would be a lie,
+  // the page would keep running the raw JSON the builder no longer shows. The sync effect
+  // can't do it: it ignores an empty tree, which is exactly the case that matters here.
+  const discardRawAndSwitch = () => {
+    onRawPipelineChange(formatPipeline(convertToMongoPipeline(filters, projectionFields)));
+    setParseError(null);
+    setParseWarnings([]);
+    setMode("visual");
+  };
 
   // Handle LLM-generated filters
   const handleLLMFilter = useCallback((generated: FilterBlock[]) => {
     setFilters(generated);
+    setParseError(null);
+    setParseWarnings([]);
     setMode("visual");
   }, []);
 
   // Handle import from dialog
   const handleImportFromDialog = useCallback((imported: FilterBlock[]) => {
     setFilters(imported);
+    setParseError(null);
+    setParseWarnings([]);
     setMode("visual");
   }, []);
 
@@ -181,6 +222,37 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
         </div>
       </div>
 
+      {/* Why the raw JSON couldn't become a tree, with a way out that says what it costs. */}
+      {parseError && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
+          <div className="space-y-1.5">
+            <p>{parseError}</p>
+            <p className="text-muted-foreground">
+              Keep editing the JSON here, or switch and lose it — the visual builder would show its own
+              tree, not this pipeline.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-xs"
+              onClick={discardRawAndSwitch}
+            >
+              Switch anyway and discard this JSON
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* What the last import had to give up */}
+      {mode === "visual" && parseWarnings.length > 0 && (
+        <div className="rounded-md border border-input bg-muted/40 px-3 py-2 text-xs text-muted-foreground space-y-1">
+          {parseWarnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      )}
+
       {mode === "visual" ? (
         <>
           {/* Visual filter tree */}
@@ -204,7 +276,7 @@ export const FilterBuilder = forwardRef<FilterBuilderHandle, FilterBuilderProps>
         <div>
           <textarea
             value={rawPipelineText}
-            onChange={(e) => onRawPipelineChange(e.target.value)}
+            onChange={(e) => { onRawPipelineChange(e.target.value); setParseError(null); }}
             className="w-full h-64 font-mono text-xs bg-muted/50 border border-input rounded-md p-3 resize-y focus:outline-none focus:ring-2 focus:ring-ring"
             spellCheck={false}
             placeholder="Enter your MongoDB aggregation pipeline as a JSON array..."

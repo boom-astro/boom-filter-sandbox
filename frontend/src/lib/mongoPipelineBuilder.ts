@@ -6,6 +6,24 @@
 import type { FilterNode, FilterBlock, FilterCondition, FilterExpression } from "./filterSchema";
 
 /**
+ * Fields the generated $project always keeps. objectId comes first because the API
+ * rejects any pipeline whose final $project doesn't include it.
+ * mongoPipelineParser reads this list to tell the user which projected fields a
+ * Raw JSON → Visual switch would drop.
+ */
+export const BUILDER_PROJECTION_FIELDS = [
+  "objectId",
+  "candidate.magpsf",
+  "candidate.ra",
+  "candidate.dec",
+  "candidate.jd",
+  "candidate.drb",
+  "classifications",
+  "properties",
+  "coordinates",
+] as const;
+
+/**
  * Convert a raw expression node into a MongoDB `$expr` match expression.
  */
 function expressionToMongo(node: FilterExpression): Record<string, unknown> | null {
@@ -144,17 +162,10 @@ export function convertToMongoPipeline(
   }
 
   // Build the $project stage
-  const project: Record<string, unknown> = {
-    objectId: 1,
-    "candidate.magpsf": 1,
-    "candidate.ra": 1,
-    "candidate.dec": 1,
-    "candidate.jd": 1,
-    "candidate.drb": 1,
-    classifications: 1,
-    properties: 1,
-    coordinates: 1,
-  };
+  const project: Record<string, unknown> = {};
+  for (const field of BUILDER_PROJECTION_FIELDS) {
+    project[field] = 1;
+  }
 
   if (projectionFields) {
     for (const field of projectionFields) {
