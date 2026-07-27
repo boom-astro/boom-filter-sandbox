@@ -712,14 +712,14 @@ function LightcurveInternal({ data, setExpandedDialogOpen, setHelpDialogOpen, he
     );
 }
 
-export default function Lightcurve({ data }: { data: LightcurveData }) {
+export default function Lightcurve({ data, height }: { data: LightcurveData, height?: string }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [helpDialogOpen, setHelpDialogOpen] = useState(false);
 
     return (
         <Card className="@container/card col-span-1 @xl/main:col-span-2">
             <CardContent>
-                <LightcurveInternal data={data} setExpandedDialogOpen={setDialogOpen} setHelpDialogOpen={setHelpDialogOpen} />
+                <LightcurveInternal data={data} setExpandedDialogOpen={setDialogOpen} setHelpDialogOpen={setHelpDialogOpen} height={height} />
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                     <DialogContent className="w-[min(1400px,95vw)] max-w-none sm:!max-w-none h-[90vh] flex flex-col">
                         <LightcurveInternal data={data} setHelpDialogOpen={setHelpDialogOpen} height='100%'/>

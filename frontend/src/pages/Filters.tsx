@@ -6,7 +6,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, Sparkles } from "lucide-react";
 import { FilterBuilder } from "@/components/filter/FilterBuilder";
@@ -14,9 +13,10 @@ import type { FilterBuilderHandle } from "@/components/filter/FilterBuilder";
 import { FilterFieldBrowser } from "@/components/filter/FilterFieldBrowser";
 import { FilterHealthPanel } from "@/components/filter/FilterHealthPanel";
 import { TimeFormatSelect, TimeInput } from "@/components/alert-filter-form";
+import { AlertCutoutCard, type AlertCardData } from "@/components/alert-cutout-card";
 import { toJd, jdToFormatString, type TimeFormat } from "@/lib/time";
 import { flattenAvroSchema } from "@/lib/filterConstants";
-import api, { type FilterTestParams, type FilterTestCountResult, type AvroSchema } from "@/lib/api";
+import api, { type FilterTestParams, type FilterTestCountResult, type AvroSchema, type Cutouts } from "@/lib/api";
 import { ZTF_FALLBACK_SCHEMA } from "@/lib/ztfFallbackSchema";
 import { FAST_FADING_FILTER, FAST_FADING_JD_RANGE } from "@/lib/examplePipelines";
 
@@ -30,6 +30,7 @@ const DEFAULT_PIPELINE = `[
     "$project": {
       "_id": 1,
       "objectId": 1,
+      "candid": 1,
       "candidate.ra": 1,
       "candidate.dec": 1,
       "candidate.magpsf": 1,
@@ -83,18 +84,22 @@ function validatePipeline(raw: string): { valid: boolean; error: string | null; 
   return { valid: true, error: null, pipeline: stages };
 }
 
-// Flatten nested objects for table display (e.g. {"candidate": {"ra": 1}} -> {"candidate.ra": 1})
-function flattenObject(obj: Record<string, unknown>, prefix = ""): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const fullKey = prefix ? `${prefix}.${key}` : key;
-    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      Object.assign(result, flattenObject(value as Record<string, unknown>, fullKey));
-    } else {
-      result[fullKey] = value;
-    }
-  }
-  return result;
+// Adapt a raw pipeline result document into the shape AlertCutoutCard needs.
+function toAlertCardData(row: Record<string, unknown>): AlertCardData {
+  const candidate = (row["candidate"] && typeof row["candidate"] === "object")
+    ? row["candidate"] as Record<string, unknown>
+    : {};
+  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+  const str = (v: unknown): string | undefined => (v !== undefined && v !== null ? String(v) : undefined);
+  return {
+    objectId: str(row["objectId"]),
+    candid: str(row["candid"] ?? candidate["candid"]),
+    jd: num(candidate["jd"] ?? row["jd"]),
+    magpsf: num(candidate["magpsf"] ?? row["magpsf"]),
+    fid: num(candidate["fid"] ?? row["fid"]),
+    band: str(candidate["band"] ?? row["band"]),
+    drb: num(candidate["drb"] ?? candidate["reliability"] ?? row["drb"]) ?? null,
+  };
 }
 
 function friendlyError(err: unknown, fallback: string): string {
@@ -255,11 +260,10 @@ export default function Filters() {
     const t0 = performance.now();
     try {
       const params = buildParams(pipeline);
-      // Fire both requests in parallel: filter results + total count
-      const [data] = await Promise.all([
-        api.fetchFilterTest(params),
-        fetchTotalForWindow(),
-      ]);
+      const data = await api.fetchFilterTest(params);
+      // Disabled for now: this doubles query cost by re-running an unindexed
+      // COLLSCAN over the same jd window just to show total-in-window context.
+      // await fetchTotalForWindow();
       setQueryTimeMs(Math.round(performance.now() - t0));
       setResults(data);
       // Also set the count from results length if we didn't already have it
@@ -274,11 +278,11 @@ export default function Filters() {
     }
   }
 
-  // Compute table columns from results
-  const flatResults = results.map((r) => flattenObject(r));
-  const columns = flatResults.length > 0
-    ? Array.from(new Set(flatResults.flatMap((r) => Object.keys(r)))).filter((k) => k !== "_id")
-    : [];
+  // Cutout cache keyed by candid, cleared whenever the result set changes.
+  const cutoutCache = useRef<Map<string, Cutouts>>(new Map());
+  useEffect(() => { cutoutCache.current.clear(); }, [results]);
+  const getCutoutCache = useCallback((candid: string) => cutoutCache.current.get(candid), []);
+  const setCutoutCache = useCallback((candid: string, data: Cutouts) => { cutoutCache.current.set(candid, data); }, []);
 
   return (
     <div className="px-4 lg:px-6 space-y-4">
@@ -430,27 +434,17 @@ export default function Filters() {
                   )}
 
                   {!loading && !error && results.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            {columns.map((col) => (
-                              <TableHead key={col} className="text-xs font-mono whitespace-nowrap">{col}</TableHead>
-                            ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {flatResults.map((row, i) => (
-                            <TableRow key={i}>
-                              {columns.map((col) => (
-                                <TableCell key={col} className="text-xs font-mono whitespace-nowrap">
-                                  {row[col] !== undefined && row[col] !== null ? String(row[col]) : "—"}
-                                </TableCell>
-                              ))}
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                    <div className="space-y-3">
+                      {results.map((row, i) => (
+                        <AlertCutoutCard
+                          key={String(row["candid"] ?? row["_id"] ?? i)}
+                          alert={toAlertCardData(row)}
+                          survey={survey}
+                          getCache={getCutoutCache}
+                          setCache={setCutoutCache}
+                          expandable
+                        />
+                      ))}
                       <div className="text-sm text-muted-foreground mt-3">
                         Showing {results.length} result{results.length !== 1 ? "s" : ""}.
                       </div>
