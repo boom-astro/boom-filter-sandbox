@@ -3,6 +3,8 @@ import { useParams } from "react-router-dom";
 import api, { ApiObject } from "@/lib/api";
 import useAppStore from "@/lib/store";
 import { greatCircleDistance } from "@/lib/utils";
+import { getCelebration, type Celebration as CelebrationData } from "@/lib/confetti";
+import { Celebration } from "@/components/Celebration";
 
 const SectionCards = lazy(async () => {
   const mod = await import("@/components/section-cards");
@@ -17,6 +19,9 @@ export default function ObjectPage() {
   const [data, setData] = useState<ApiObject | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set once the object loads; the <Celebration> child below fires it after the
+  // page content has actually painted.
+  const [celebration, setCelebration] = useState<CelebrationData | null>(null);
 
   useEffect(() => {
     if (!survey || !objectId) return;
@@ -103,6 +108,8 @@ export default function ObjectPage() {
 
         setData(storedObj);
         useAppStore.getState().setCurrentSource({ survey, objectId, data: storedObj });
+
+        setCelebration(getCelebration(objectId) ?? null);
       } catch (err: unknown) {
         if (!mounted) return;
         const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message?: unknown }).message) : String(err);
@@ -112,7 +119,12 @@ export default function ObjectPage() {
       }
     }
     load();
-    return () => { mounted = false; useAppStore.getState().clearCurrentSource(); };
+    return () => {
+      mounted = false;
+      useAppStore.getState().clearCurrentSource();
+      // Unmounting <Celebration> tears down any in-flight show.
+      setCelebration(null);
+    };
   }, [survey, objectId]);
 
   return (
@@ -122,6 +134,7 @@ export default function ObjectPage() {
       {!loading && !error && data && (
         <Suspense fallback={<div className="p-6">Loading components…</div>}>
           <SectionCards data={data} />
+          {celebration && <Celebration celebration={celebration} />}
         </Suspense>
       )}
       {!loading && !error && !data && (
