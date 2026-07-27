@@ -33,4 +33,4 @@ export const FAST_FADING_FILTER: FilterBlock[] = [
 ];
 
 /** Time window the preset is meant to be evaluated over (Julian dates). */
-export const FAST_FADING_JD_RANGE = { start: "2460483", end: "2460490" };
+export const FAST_FADING_JD_RANGE = { start: "2460488", end: "2460490" };

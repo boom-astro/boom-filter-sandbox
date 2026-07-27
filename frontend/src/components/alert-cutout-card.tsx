@@ -30,8 +30,6 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
 }) {
   const [cutouts, setCutouts] = useState<Cutouts | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  // Drives lazy work that must only happen on-screen (cutouts, photometry fetch/render).
-  const [isVisible, setIsVisible] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   // Incremented on every exit or unmount to invalidate in-flight fetches.
   const fetchVersion = useRef(0);
@@ -54,13 +52,10 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
           // Leaving the viewport: invalidate any in-flight fetch and drop rendered data.
           // The raw bytes remain in the shared cache for instant restore on re-entry.
           fetchVersion.current++;
-          setIsVisible(false);
           setIsLoading(false);
           setCutouts(null);
           return;
         }
-
-        setIsVisible(true);
 
         // Entering the viewport: restore from cache or fetch for the first time.
         const cached = getCache(cacheKey);
@@ -114,19 +109,17 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
     };
   }, [cutouts, survey]);
 
-  // Inline lightcurve panel (see `showLightcurve`). Fetched once, lazily, the first
-  // time the card scrolls into view — never all at once for a whole result page.
+  // Inline lightcurve panel (see `showLightcurve`). Fetched on mount for every card of
+  // the page, not lazily on scroll: result pages are small (20 by default) and the
+  // on-scroll variant proved unreliable, leaving cards stuck on their skeleton.
   const [objectDetail, setObjectDetail] = useState<ApiObject | null>(null);
   const [detailError, setDetailError] = useState(false);
-  // Tracks which object the fetch above was for, so scrolling in and out doesn't refetch
-  // but a card reused for another object does.
-  const detailKey = useRef<string | null>(null);
 
+  // The deps are the whole identity of the fetch, so this runs once per object —
+  // no ref guard: one that outlives the effect makes StrictMode's remount skip the
+  // fetch entirely (first pass claims the key, its cleanup cancels, second pass bails).
   useEffect(() => {
-    if (!showLightcurve || !isVisible || !alert.objectId) return;
-    const key = `${survey}:${alert.objectId}`;
-    if (detailKey.current === key) return;
-    detailKey.current = key;
+    if (!showLightcurve || !alert.objectId) return;
     let cancelled = false;
     setObjectDetail(null);
     setDetailError(false);
@@ -134,18 +127,40 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
       .then((data) => { if (!cancelled) setObjectDetail(data); })
       .catch(() => { if (!cancelled) setDetailError(true); });
     return () => { cancelled = true; };
-  }, [showLightcurve, isVisible, survey, alert.objectId]);
+  }, [showLightcurve, survey, alert.objectId]);
 
   const handleRowClick = useCallback(() => {
     if (!alert.objectId) return;
     window.open(`/objects/${encodeURIComponent(survey)}/${encodeURIComponent(alert.objectId)}`, "_blank");
   }, [survey, alert.objectId]);
 
+  // An object with no public datapoint at all gives an empty plot and usually no cutouts
+  // either: nothing to judge, so it doesn't earn a row. This is done here rather than in
+  // the filter pipeline because the equivalent condition there forces an aux $lookup
+  // costing ~20 ms per alert — it made Count time out while removing nothing.
+  const nothingToShow = useMemo(() => {
+    if (detailError) return true;
+    if (objectDetail === null) return false;
+    const points = (source: unknown): number => {
+      if (!source || typeof source !== "object") return 0;
+      const doc = source as Record<string, unknown>;
+      return (["prv_candidates", "fp_hists", "prv_nondetections"] as const)
+        .reduce((n, key) => n + (Array.isArray(doc[key]) ? (doc[key] as unknown[]).length : 0), 0);
+    };
+    const matched = objectDetail["survey_matches"];
+    const matchedPoints = matched && typeof matched === "object"
+      ? Object.values(matched as Record<string, unknown>).reduce((n: number, m) => n + points(m), 0)
+      : 0;
+    return points(objectDetail) + matchedPoints === 0;
+  }, [objectDetail, detailError]);
+
+  if (showLightcurve && nothingToShow) return null;
+
   // Compact triplet for the collapsed row.
   const rowCutouts = (() => {
     if (!cacheKey) {
       return (
-        <div className="h-24 w-[19.5rem] bg-muted rounded flex items-center justify-center text-xs text-muted-foreground text-center px-2">
+        <div className="h-24 w-78 bg-muted rounded flex items-center justify-center text-xs text-muted-foreground text-center px-2">
           No "candid" or "objectId" in projection
         </div>
       );
@@ -221,7 +236,7 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
             // Kept mounted once loaded — unmounting off-screen would make the list jump while scrolling.
             <Lightcurve data={objectDetail} height="220px" />
           ) : (
-            <Skeleton className="h-[220px] w-full" />
+            <Skeleton className="h-55 w-full" />
           )}
         </div>
       )}

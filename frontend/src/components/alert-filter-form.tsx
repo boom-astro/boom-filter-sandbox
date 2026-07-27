@@ -42,10 +42,10 @@ export function TimeFormatSelect({ value, onChange, className }: { value: TimeFo
   );
 }
 
-export function TimeInput({ id, value, onChange, format, className }: {
-  id: string; value: string; onChange: (v: string) => void; format: TimeFormat; className?: string;
+export function TimeInput({ id, value, onChange, format, className, disabled }: {
+  id: string; value: string; onChange: (v: string) => void; format: TimeFormat; className?: string; disabled?: boolean;
 }) {
-  const base = { id, value, onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.value) };
+  const base = { id, value, disabled, onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.value) };
   if (format === 'local' || format === 'utc') return (
     <Input {...base} type="datetime-local" className={cn("pr-1.5", className)} />
   );

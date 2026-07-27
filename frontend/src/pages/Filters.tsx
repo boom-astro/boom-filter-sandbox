@@ -7,14 +7,15 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Info, Sparkles } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FilterBuilder } from "@/components/filter/FilterBuilder";
 import type { FilterBuilderHandle } from "@/components/filter/FilterBuilder";
 import { FilterFieldBrowser } from "@/components/filter/FilterFieldBrowser";
 import { FilterHealthPanel } from "@/components/filter/FilterHealthPanel";
 import { TimeFormatSelect, TimeInput } from "@/components/alert-filter-form";
 import { AlertCutoutCard, type AlertCardData } from "@/components/alert-cutout-card";
-import { toJd, jdToFormatString, type TimeFormat } from "@/lib/time";
+import { jdToFormatString, type TimeFormat } from "@/lib/time";
 import { flattenAvroSchema } from "@/lib/filterConstants";
 import api, { type FilterTestParams, type FilterTestCountResult, type AvroSchema, type Cutouts } from "@/lib/api";
 import { ZTF_FALLBACK_SCHEMA } from "@/lib/ztfFallbackSchema";
@@ -93,7 +94,11 @@ function toAlertCardData(row: Record<string, unknown>): AlertCardData {
   const str = (v: unknown): string | undefined => (v !== undefined && v !== null ? String(v) : undefined);
   return {
     objectId: str(row["objectId"]),
-    candid: str(row["candid"] ?? candidate["candid"]),
+    // In the alert collection the candid *is* the _id — and the API forbids projecting it
+    // away, so it is always there. Without it the card falls back to the object-level
+    // cutout lookup, which returns the object's brightest alert whatever its programid:
+    // often a private one whose cutouts aren't stored, hence "No cutouts" on a public alert.
+    candid: str(row["candid"] ?? candidate["candid"] ?? row["_id"]),
     jd: num(candidate["jd"] ?? row["jd"]),
     magpsf: num(candidate["magpsf"] ?? row["magpsf"]),
     fid: num(candidate["fid"] ?? row["fid"]),
@@ -119,13 +124,10 @@ export default function Filters() {
   const [activeTab, setActiveTab] = useState<"editor" | "results">("editor");
   const [survey, setSurvey] = useState<"ZTF" | "LSST">("ZTF");
   const [pipelineText, setPipelineText] = useState(DEFAULT_PIPELINE);
-  // Time range: `startTime`/`endTime` hold the value as typed, in `timeFormat`.
-  // JD stays the wire format — see `startJd`/`endJd` below.
+  // Only how the fixed window is displayed — the window itself never changes.
   const [timeFormat, setTimeFormat] = useState<TimeFormat>("jd");
-  const [startTime, setStartTime] = useState("2461138.5");
-  const [endTime, setEndTime] = useState("2461140.5");
   // Page size, also the API's `limit`. Paging is done with a $skip stage — see buildParams.
-  const [pageSize, setPageSize] = useState("30");
+  const [pageSize, setPageSize] = useState("20");
 
   // Ref for FilterBuilder imperative handle
   const filterBuilderRef = useRef<FilterBuilderHandle>(null);
@@ -136,6 +138,7 @@ export default function Filters() {
   // offsets only mean something relative to the query that produced them.
   function resetPaging() {
     setCountResult(null);
+    setTotalCount(null);
     setPage(0);
     setHasMore(false);
   }
@@ -144,6 +147,7 @@ export default function Filters() {
   const handlePipelineTextChange = useCallback((text: string) => {
     setPipelineText(text);
     setCountResult(null);
+    setTotalCount(null);
     setPage(0);
     setHasMore(false);
   }, []);
@@ -187,70 +191,65 @@ export default function Filters() {
     return () => { cancelled = true; };
   }, [survey]);
 
-  // The API only ever speaks JD, whatever format is displayed.
-  const startJd = toJd(startTime, timeFormat);
-  const endJd = toJd(endTime, timeFormat);
-  const rangeError =
-    startTime && endTime && (startJd === undefined || endJd === undefined) ? "Invalid date." :
-    startJd !== undefined && endJd !== undefined && endJd <= startJd ? "End must be after start." :
-    null;
+  // The time window is fixed to the ZTF Summer School range: it is the window the school's
+  // data and example filter are built around. The inputs stay visible but read-only, and
+  // the format picker still works — reading the window in UTC is useful, changing it isn't.
+  const startJd = Number(FAST_FADING_JD_RANGE.start);
+  const endJd = Number(FAST_FADING_JD_RANGE.end);
+  const startTime = jdToFormatString(startJd, timeFormat);
+  const endTime = jdToFormatString(endJd, timeFormat);
 
-  function handleTimeChange(setter: (v: string) => void) {
-    return (v: string) => { setter(v); resetPaging(); };
-  }
-
-  // Keep the instant the user picked when the display format changes.
-  function handleTimeFormatChange(next: TimeFormat) {
-    if (startJd !== undefined) setStartTime(jdToFormatString(startJd, next));
-    if (endJd !== undefined) setEndTime(jdToFormatString(endJd, next));
-    setTimeFormat(next);
-  }
-
-  // One-click preset: load the "fast fading transient" example filter and its time window.
+  // One-click preset: load the "fast fading transient" example filter. Its time window is
+  // already the page's fixed one, so there is nothing to set here.
   function handleLoadExample() {
     setSurvey("ZTF");
     // The builder syncs the generated pipeline text back to us via onRawPipelineChange.
     filterBuilderRef.current?.loadFilterTree(FAST_FADING_FILTER);
-    setTimeFormat("jd");
-    setStartTime(FAST_FADING_JD_RANGE.start);
-    setEndTime(FAST_FADING_JD_RANGE.end);
     resetPaging();
     setError(null);
     setActiveTab("editor");
   }
 
-  // `paged` adds the $sort/$skip stages that page through the matches. The API appends its
+  // No aux-collection condition here on purpose. Requiring public photometry via
+  // `prv_candidates` makes the API inject a $lookup that costs ~20 ms per alert: measured
+  // on one slice, 378 matches took 21 s to count and returned the very same 378 — the
+  // condition removed nothing, because a public alert is itself part of its object's
+  // public history. Cards that really have nothing to show are dropped client-side
+  // instead, which keeps the count both true and fast.
+
+  // `paged` adds the stages and sort that page through the matches. The API appends its
   // own $limit at the very end and requires the pipeline to still end on the $project, so
-  // both go just before that last stage. Count requests stay unpaged: sorting them is pure
-  // cost, and a $skip would make the total wrong.
+  // the extra stages go just before that last one. Count requests stay unpaged: a $skip
+  // would make the total wrong, and sorting a count is pure cost.
   function buildParams(
     pipeline: Record<string, unknown>[],
     { skip = 0, paged = false }: { skip?: number; paged?: boolean } = {},
   ): FilterTestParams {
-    // Paging needs a total order, otherwise the same offset can repeat or skip alerts from
-    // one page to the next. candidate.jd alone isn't one — a whole exposure shares a single
-    // jd — so _id (the candid, unique) breaks the ties.
-    const staged = paged
-      ? [
-          ...pipeline.slice(0, -1),
-          { $sort: { "candidate.jd": 1, _id: 1 } },
-          ...(skip > 0 ? [{ $skip: skip }] : []),
-          pipeline[pipeline.length - 1],
-        ]
-      : pipeline;
+    const staged = [
+      ...pipeline.slice(0, -1),
+      ...(paged && skip > 0 ? [{ $skip: skip }] : []),
+      pipeline[pipeline.length - 1],
+    ];
     const params: FilterTestParams = {
       pipeline: staged,
       survey,
       permissions: { [survey]: [1] },
     };
-    if (startJd !== undefined) params.start_jd = startJd;
-    if (endJd !== undefined) params.end_jd = endJd;
+    params.start_jd = startJd;
+    params.end_jd = endJd;
     if (pageSize) params.limit = parseInt(pageSize, 10);
+    if (paged) {
+      // Paging by offset needs a defined order. This one is index-served; an in-pipeline
+      // $sort measured 14 s per page against 0.4 s here. The catch is that it doesn't
+      // break ties, and a whole exposure shares one jd — so alerts with the exact same jd
+      // can in principle shuffle between two pages.
+      params.sort_by = "candidate.jd";
+      params.sort_order = "asc";
+    }
     return params;
   }
 
   function fetchTotalForWindow(): Promise<void> {
-    if (startJd === undefined || endJd === undefined) return Promise.resolve();
     setTotalCountLoading(true);
     return api.fetchTotalAlertCount(survey, startJd, endJd, { [survey]: [1] })
       .then((c) => setTotalCount(c))
@@ -291,15 +290,15 @@ export default function Filters() {
     setError(null);
     setLoading(true);
     setResults([]);
-    setTotalCount(null);
     setQueryTimeMs(null);
     const t0 = performance.now();
     try {
       const params = buildParams(pipeline, { skip: nextPage * size, paged: true });
       const data = await api.fetchFilterTest(params);
-      // Disabled for now: this doubles query cost by re-running an unindexed
-      // COLLSCAN over the same jd window just to show total-in-window context.
-      // await fetchTotalForWindow();
+      // The total-in-window is deliberately not fetched here: it re-runs an unindexed
+      // COLLSCAN over the same jd window. A previous Count already got both numbers for
+      // this query, and they are kept (resetPaging drops them when the query changes),
+      // so running the filter after a Count keeps showing the real pass rate.
       setQueryTimeMs(Math.round(performance.now() - t0));
       setResults(data);
       setPage(nextPage);
@@ -330,7 +329,8 @@ export default function Filters() {
   const offset = parsedPageSize > 0 ? page * parsedPageSize : 0;
   const firstShown = offset + 1;
   const lastShown = offset + results.length;
-  // Only known once a Count (or a short first page) gave us the real total.
+  const countLabel = countResult === null ? null : countResult.count.toLocaleString();
+  // Only known once a Count (or a short first page) gave us the total.
   const totalPages = countResult && parsedPageSize > 0
     ? Math.max(1, Math.ceil(countResult.count / parsedPageSize))
     : null;
@@ -351,7 +351,7 @@ export default function Filters() {
                   size="sm"
                   className="h-7 text-xs"
                   onClick={handleLoadExample}
-                  title="Load a ready-made fast-fading transient filter (JD 2460483 – 2460490)"
+                  title={`Load a ready-made fast-fading transient filter (JD ${FAST_FADING_JD_RANGE.start} – ${FAST_FADING_JD_RANGE.end})`}
                 >
                   <Sparkles className="h-3 w-3 mr-1" /> ZTF Summer School filter
                 </Button>
@@ -365,7 +365,7 @@ export default function Filters() {
                     Results
                     {countResult && (
                       <span className="ml-2 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
-                        {countResult.count}
+                        {countLabel}
                       </span>
                     )}
                   </TabsTrigger>
@@ -399,34 +399,43 @@ export default function Filters() {
                     <Separator />
 
                     <div className="flex items-center justify-between gap-3 mb-2">
-                      <h3 className="font-semibold text-sm">Time Range</h3>
-                      <TimeFormatSelect value={timeFormat} onChange={handleTimeFormatChange} />
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="font-semibold text-sm">Time Range</h3>
+                        <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                      </div>
+                      {/* Display only — switching to UTC/MJD re-renders the same fixed window. */}
+                      <TimeFormatSelect value={timeFormat} onChange={setTimeFormat} />
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                      <div className="sm:col-span-2">
-                        <Label htmlFor="startTime" className="text-xs font-medium mb-1 block text-muted-foreground">Start</Label>
-                        <TimeInput
-                          id="startTime"
-                          value={startTime}
-                          onChange={handleTimeChange(setStartTime)}
-                          format={timeFormat}
-                          className={rangeError ? "border-destructive focus-visible:ring-destructive" : undefined}
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <Label htmlFor="endTime" className="text-xs font-medium mb-1 block text-muted-foreground">End</Label>
-                        <TimeInput
-                          id="endTime"
-                          value={endTime}
-                          onChange={handleTimeChange(setEndTime)}
-                          format={timeFormat}
-                          className={rangeError ? "border-destructive focus-visible:ring-destructive" : undefined}
-                        />
-                      </div>
-                    </div>
-
-                    {rangeError && <p className="text-xs text-destructive">{rangeError}</p>}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 cursor-help">
+                          <div className="sm:col-span-2">
+                            <Label htmlFor="startTime" className="text-xs font-medium mb-1 block text-muted-foreground">Start</Label>
+                            <TimeInput
+                              id="startTime"
+                              value={startTime}
+                              onChange={() => {}}
+                              format={timeFormat}
+                              disabled
+                            />
+                          </div>
+                          <div className="sm:col-span-2">
+                            <Label htmlFor="endTime" className="text-xs font-medium mb-1 block text-muted-foreground">End</Label>
+                            <TimeInput
+                              id="endTime"
+                              value={endTime}
+                              onChange={() => {}}
+                              format={timeFormat}
+                              disabled
+                            />
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">
+                        ZTF Summer School default, the source to find is in this range.
+                      </TooltipContent>
+                    </Tooltip>
 
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                       <div className="sm:col-span-2">
@@ -438,7 +447,7 @@ export default function Filters() {
                           value={pageSize}
                           // Offsets from the previous page size no longer line up.
                           onChange={(e) => { setPageSize(e.target.value); resetPaging(); }}
-                          placeholder="30"
+                          placeholder="20"
                         />
                       </div>
                     </div>
@@ -458,7 +467,7 @@ export default function Filters() {
 
                     {countResult && !countLoading && (
                       <div className="text-sm text-muted-foreground mt-2">
-                        Matched <span className="font-semibold text-foreground">{countResult.count}</span> alerts.
+                        Matched <span className="font-semibold text-foreground">{countLabel}</span> alerts.
                       </div>
                     )}
                   </div>
@@ -509,7 +518,7 @@ export default function Filters() {
                       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                         <div className="text-sm text-muted-foreground" title="Sorted by candidate.jd, then candid — a stable order is what makes paging exact">
                           Showing {firstShown}–{lastShown}
-                          {countResult ? ` of ${countResult.count}` : ""}
+                          {countLabel ? ` of ${countLabel}` : ""}
                           {totalPages ? ` · page ${page + 1} of ${totalPages}` : ` · page ${page + 1}`}
                           {" · oldest first"}
                         </div>

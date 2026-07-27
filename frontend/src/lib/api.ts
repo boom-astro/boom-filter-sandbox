@@ -484,6 +484,13 @@ export type FilterTestParams = {
   start_jd?: number;
   end_jd?: number;
   limit?: number;
+  /**
+   * Field to sort on. The API inserts the $sort right after the time-window $match,
+   * where an index can serve it — far cheaper than a $sort placed in the pipeline
+   * itself, which forces a blocking sort of every match. Ignored by /filters/test/count.
+   */
+  sort_by?: string;
+  sort_order?: "asc" | "desc";
 };
 
 export type FilterTestCountResult = {
