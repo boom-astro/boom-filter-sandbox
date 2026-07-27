@@ -106,7 +106,7 @@ function LayoutRoutes() {
                   <Route path="/query" element={<ProtectedRoute><Query /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                   <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/filters" element={<Filters />} />
+                  <Route path="/filters" element={<ProtectedRoute><Filters /></ProtectedRoute>} />
                   <Route path="/docs/kafka" element={<KafkaDocs />} />
                   <Route path="/docs/kafka/access-guide" element={<KafkaAccessGuide />} />
                   <Route path="/docs/api" element={<ApiDocs />} />
