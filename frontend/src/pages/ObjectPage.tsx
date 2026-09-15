@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import api, { ApiObject } from "@/lib/api";
 import useAppStore from "@/lib/store";
-import { greatCircleDistance } from "@/lib/utils";
+import { greatCircleDistance } from "@/lib/coordinates";
 import { getCelebration, type Celebration as CelebrationData } from "@/lib/confetti";
 import { Celebration } from "@/components/Celebration";
 

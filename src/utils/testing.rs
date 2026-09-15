@@ -1,7 +1,7 @@
 use crate::{
     alert::{
-        sanitize_winter_avro, AlertWorker, DecamAlertWorker, LightcurveJdOnly, LsstAlertWorker,
-        SchemaRegistry, WinterAlertWorker, ZtfAlertWorker,
+        alert_temp_queue_name, sanitize_winter_avro, AlertWorker, DecamAlertWorker,
+        LightcurveJdOnly, LsstAlertWorker, SchemaRegistry, WinterAlertWorker, ZtfAlertWorker,
         LSST_SCHEMA_REGISTRY_GITHUB_FALLBACK_URL, LSST_SCHEMA_REGISTRY_URL,
     },
     conf,
@@ -148,6 +148,7 @@ pub async fn insert_custom_test_filter(
         description: Some("Test filter".to_string()),
         survey: survey.clone(),
         user_id: "test_user".to_string(),
+        watchlist: None,
         permissions,
         active: true,
         active_fid: "v2e0fs".to_string(),
@@ -195,7 +196,9 @@ pub async fn empty_processed_alerts_queue(
     let config = conf::load_config(Some(TEST_CONFIG_FILE)).unwrap();
     let mut con = config.build_redis().await?;
     con.del::<&str, usize>(input_queue_name).await.unwrap();
-    con.del::<&str, usize>("{}_temp").await.unwrap();
+    con.del::<&str, usize>(&alert_temp_queue_name(input_queue_name))
+        .await
+        .unwrap();
     con.del::<&str, usize>(output_queue_name).await.unwrap();
 
     Ok(())
