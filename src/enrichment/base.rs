@@ -1,7 +1,7 @@
 use crate::{
     conf::{self, AppConfig},
     enrichment::models::{ModelError, SharedModels},
-    scheduler::record_worker_retry,
+    scheduler::{count_enriched_alerts, record_worker_retry},
     utils::{
         cutouts::CutoutStorageError,
         enums::Survey,
@@ -243,9 +243,6 @@ pub async fn run_enrichment_worker<T: EnrichmentWorker>(
             is_transient_redis_error,
             || record_worker_retry("enrichment", &survey, "valkey_rpop"),
             || {
-                // Clone the (cheaply-clonable) multiplexed connection so the
-                // future owns it, rather than borrowing `con` through the
-                // FnMut closure.
                 let mut con = con.clone();
                 let key: &str = &input_queue;
                 async move { con.rpop::<&str, Vec<i64>>(key, Some(batch_size)).await }
@@ -258,6 +255,7 @@ pub async fn run_enrichment_worker<T: EnrichmentWorker>(
         })?;
 
         if candids.is_empty() {
+            debug!(queue = %input_queue, "queue empty, sleeping 500ms");
             ACTIVE.add(-1, &active_attrs);
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             command_check_countdown = 0;
@@ -279,6 +277,7 @@ pub async fn run_enrichment_worker<T: EnrichmentWorker>(
             ACTIVE.add(-1, &active_attrs);
             BATCH_PROCESSED.add(1, attributes);
             ALERT_PROCESSED.add(candids.len() as u64, attributes);
+            count_enriched_alerts(candids.len());
             continue;
         }
         retry_transient(
@@ -304,6 +303,7 @@ pub async fn run_enrichment_worker<T: EnrichmentWorker>(
         ACTIVE.add(-1, &active_attrs);
         BATCH_PROCESSED.add(1, attributes);
         ALERT_PROCESSED.add(candids.len() as u64, attributes);
+        count_enriched_alerts(candids.len());
     }
 
     Ok(())

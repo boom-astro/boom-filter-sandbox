@@ -26,6 +26,8 @@ const Help = lazy(() => import("@/pages/Help"))
 const Acknowledgments = lazy(() => import("@/pages/Acknowledgments"))
 const Dashboard = lazy(() => import("@/pages/Dashboard"))
 const Filters = lazy(() => import("@/pages/Filters"))
+const Admin = lazy(() => import("@/pages/Admin"))
+const Telescopes = lazy(() => import("@/pages/Telescopes"))
 
 // Release mode flag - set VITE_PRERELEASE_MODE=true at build time to restrict app to landing page only
 const PRERELEASE_MODE = import.meta.env.VITE_PRERELEASE_MODE === 'true';
@@ -109,7 +111,9 @@ function LayoutRoutes() {
                   {!PRERELEASE_MODE && <Route path="/activate" element={<SignupPage />} />}
                   <Route path="/query" element={<ProtectedRoute><Query /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+                  <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
                   <Route path="/dashboard" element={<Dashboard />} />
+                  <Route path="/telescopes" element={<Telescopes />} />
                   <Route path="/filters" element={<ProtectedRoute><Filters /></ProtectedRoute>} />
                   <Route path="/docs/kafka" element={<KafkaDocs />} />
                   <Route path="/docs/kafka/access-guide" element={<KafkaAccessGuide />} />
