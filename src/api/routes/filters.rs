@@ -63,6 +63,7 @@ async fn validate_watchlist(
     Ok(())
 }
 
+use crate::api::limits::{large_query_slot, next_result};
 use crate::utils::moc::{
     credible_volume_to_2d_moc, moc_from_ascii, moc_hpx_stage, parse_3d_skymap_bytes,
     CredibleVolumeIndex, LIGO3dskymap,
@@ -1276,6 +1277,10 @@ pub async fn post_filter_test(
     db: web::Data<Database>,
     body: web::Json<FilterTestRequest>,
 ) -> HttpResponse {
+    let _slot = match large_query_slot().await {
+        Ok(slot) => slot,
+        Err(response) => return response,
+    };
     // Taken rather than cloned: a skymap can be most of the 200 MB this route
     // accepts, and every copy of it is held for the life of the request.
     let body = body.into_inner();
@@ -1369,6 +1374,7 @@ pub async fn post_filter_test(
     };
 
     let mut results = Vec::new();
+    let mut bytes_read = 0;
     if let Some(region) = &region {
         // Scoring is what decides which alerts count, so the page cannot be cut
         // before it. Score a batch at a time and stop as soon as enough survive,
@@ -1377,15 +1383,10 @@ pub async fn post_filter_test(
         let mut batch: Vec<Document> = Vec::new();
         let mut drained = false;
         while !drained {
-            match cursor.next().await {
-                Some(Ok(doc)) => batch.push(doc),
-                Some(Err(e)) => {
-                    return response::internal_error(&format!(
-                        "error retrieving test filter results: {}",
-                        e
-                    ));
-                }
-                None => drained = true,
+            match next_result(&mut cursor, &mut bytes_read).await {
+                Ok(Some(doc)) => batch.push(doc),
+                Ok(None) => drained = true,
+                Err(e) => return e.into_response("error retrieving test filter results"),
             }
             if !drained && batch.len() < CREDIBLE_LEVEL_BATCH {
                 continue;
@@ -1402,15 +1403,11 @@ pub async fn post_filter_test(
             results.truncate(want);
         }
     } else {
-        while let Some(result) = cursor.next().await {
-            match result {
-                Ok(doc) => results.push(doc),
-                Err(e) => {
-                    return response::internal_error(&format!(
-                        "error retrieving test filter results: {}",
-                        e
-                    ));
-                }
+        loop {
+            match next_result(&mut cursor, &mut bytes_read).await {
+                Ok(Some(doc)) => results.push(doc),
+                Ok(None) => break,
+                Err(e) => return e.into_response("error retrieving test filter results"),
             }
         }
     }
@@ -1639,6 +1636,13 @@ pub struct LsstFilterMatch {
 
 #[serdavro]
 #[derive(Debug, Deserialize, Serialize)]
+pub struct DecamFilterMatch {
+    pub prv_candidates: Vec<DecamCandidate>,
+    pub fp_hists: Vec<DecamForcedPhot>,
+}
+
+#[serdavro]
+#[derive(Debug, Deserialize, Serialize)]
 /// ZTF data available at filtering time
 pub struct ZtfAlertToFilter {
     pub candid: i64,
@@ -1657,6 +1661,8 @@ pub struct ZtfAlertToFilter {
     pub aliases: ZtfAliases,
     #[serde(rename = "LSST")]
     pub lsst: Option<LsstFilterMatch>,
+    #[serde(rename = "DECAM")]
+    pub decam: Option<DecamFilterMatch>,
     pub host_galaxy: Option<HostGalaxyAssociation>,
 }
 
@@ -1678,6 +1684,8 @@ pub struct LsstAlertToFilter {
     pub aliases: LsstAliases,
     #[serde(rename = "ZTF")]
     pub ztf: Option<ZtfFilterMatch>,
+    #[serde(rename = "DECAM")]
+    pub decam: Option<DecamFilterMatch>,
     pub host_galaxy: Option<HostGalaxyAssociation>,
 }
 

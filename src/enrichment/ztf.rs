@@ -12,7 +12,7 @@ use crate::enrichment::{
 use crate::milvus::{BackupQueue, EmbeddingRow, MilvusSink};
 use crate::utils::cutouts::{AlertCutout, CutoutStorage};
 use crate::utils::db::mongify;
-use crate::utils::enums::Survey;
+use crate::utils::enums::{ProgramId, Survey};
 use crate::utils::host::HostGalaxyAssociation;
 use crate::utils::lightcurves::{
     analyze_photometry, is_stationary, prepare_photometry, summarise_detections, ActivityMetrics,
@@ -900,7 +900,7 @@ impl EnrichmentWorker for ZtfEnrichmentWorker {
             ));
             processed_alerts.push(format!("{},{}", item.programid, item.candid));
 
-            if self.milvus.is_enabled() {
+            if self.milvus.is_enabled() && item.programid == ProgramId::Public as i32 {
                 if let Some(embedding) = fusion_embedding {
                     embedding_rows.push(EmbeddingRow {
                         object_id: item.alert.object_id.clone(),
@@ -935,7 +935,7 @@ impl EnrichmentWorker for ZtfEnrichmentWorker {
             let nan_set_doc = {
                 let mut d = doc! {
                     "villar_fit.reduced_chi2": f64::NAN,
-                    "villar_fit.peak_flux": f64::NAN,
+                    "villar_fit.peak_mag": f64::NAN,
                 };
                 for filt in villar_pso::FILTERS {
                     for pname in villar_pso::PARAM_NAMES {
@@ -990,9 +990,9 @@ impl EnrichmentWorker for ZtfEnrichmentWorker {
                         for (result, candid) in results.into_iter().zip(candids) {
                             let mut set_doc = doc! {
                                 "villar_fit.reduced_chi2": result.reduced_chi2,
-                                "villar_fit.peak_flux": result.peak_flux,
+                                "villar_fit.peak_mag": result.peak_mag,
                             };
-                            for (key, val) in result.params_unnorm.to_named_map() {
+                            for (key, val) in result.params_mag.to_named_map() {
                                 set_doc.insert(format!("villar_fit.{}", key), val);
                             }
                             villar_updates.push(build_update(candid, set_doc));
