@@ -115,5 +115,6 @@ function toCardData(alert: Alert): AlertCardData {
     fid: alert.candidate.fid,
     band: alert.candidate.band !== undefined ? String(alert.candidate.band) : undefined,
     drb: alert.candidate.drb ?? alert.candidate.reliability ?? null,
+    host: alert.properties?.best_host ?? null,
   };
 }

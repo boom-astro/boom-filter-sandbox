@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { ExternalLink } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import api, { ApiObject, Cutouts } from "@/lib/api";
+import api, { ApiObject, Cutouts, HostSummary } from "@/lib/api";
 import { bytes2image } from "@/lib/imageProcessing";
 import Lightcurve from "@/components/Lightcurve";
 
@@ -15,6 +15,7 @@ export type AlertCardData = {
   fid?: number;
   band?: string;
   drb?: number | null;
+  host?: HostSummary | null;
 };
 
 export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, scrollRoot, getCache, setCache, showLightcurve = false }: {
@@ -220,6 +221,7 @@ export const AlertCutoutCard = memo(function AlertCutoutCard({ alert, survey, sc
           {alert.magpsf !== undefined && <div><span className="text-muted-foreground">Magnitude:</span> <span className="font-mono">{alert.magpsf.toFixed(2)}</span></div>}
           {alert.band !== undefined && <div><span className="text-muted-foreground">Band:</span> <span className="font-mono">{alert.band}</span></div>}
           {alert.band === undefined && alert.fid !== undefined && <div><span className="text-muted-foreground">Band:</span> <span className="font-mono">{alert.fid}</span></div>}
+          {alert.host?.dist_mpc != null && <div><span className="text-muted-foreground">Host:</span> <span className="font-mono">{alert.host.name ? `${alert.host.name}, ` : ''}{alert.host.dist_mpc.toFixed(1)} Mpc</span></div>}
         </div>
         {alert.objectId && (
           <div className="shrink-0 self-start" title="Open object page">
