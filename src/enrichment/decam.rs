@@ -344,6 +344,7 @@ pub struct DecamSsoAssociation {
 pub struct DecamAlertProperties {
     #[serde(default)]
     pub rock: bool,
+    /// Detections at this position span more than 0.01 day (about 15 minutes).
     pub stationary: bool,
     /// Absent means never evaluated for a host, not evaluated and hostless.
     #[serde(default)]
@@ -489,8 +490,11 @@ impl EnrichmentWorker for DecamEnrichmentWorker {
 
     fn disable_babamul(&mut self) {}
 
-    fn write_only_properties(&mut self, keys: Vec<String>) -> bool {
-        self.only_properties = Some(keys);
+    fn write_only(&mut self, properties: Vec<String>, gp_fit: bool) -> bool {
+        if gp_fit {
+            return false;
+        }
+        self.only_properties = Some(properties);
         true
     }
 

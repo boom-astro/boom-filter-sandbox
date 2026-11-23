@@ -1,8 +1,9 @@
 use crate::{
     alert::{
-        AskapAliases, AskapCandidate, DecamAliases, DecamCandidate, DecamForcedPhot, LsstAliases,
-        LsstCandidate, LsstForcedPhot, WinterAliases, WinterCandidate, WinterPrvCandidate,
-        ZtfAliases, ZtfCandidate, ZtfForcedPhot, ZtfPrvCandidate,
+        ArgusAliases, ArgusPhotometry, AskapAliases, AskapCandidate, DecamAliases, DecamCandidate,
+        DecamForcedPhot, LsstAliases, LsstCandidate, LsstForcedPhot, WinterAliases,
+        WinterCandidate, WinterPrvCandidate, ZtfAliases, ZtfCandidate, ZtfForcedPhot,
+        ZtfPrvCandidate, ARGUS_SCHEMA,
     },
     api::{
         catalogs::{catalog_accessible, WATCHLIST_PREFIX},
@@ -12,8 +13,8 @@ use crate::{
     },
     conf::{AppConfig, CatalogXmatchConfig, FilterWorkerConfig},
     enrichment::{
-        AskapAlertProperties, DecamAlertProperties, LsstAlertProperties, WinterAlertProperties,
-        ZtfAlertClassifications, ZtfAlertProperties,
+        ArgusAlertProperties, AskapAlertProperties, DecamAlertProperties, LsstAlertProperties,
+        WinterAlertProperties, ZtfAlertClassifications, ZtfAlertProperties,
     },
     filter::{
         build_filter_pipeline, find_unknown_field,
@@ -1945,7 +1946,69 @@ fn filter_schema(survey: &Survey) -> apache_avro::Schema {
         Survey::Winter => WinterAlertToFilter::get_schema(),
         Survey::Decam => DecamAlertToFilter::get_schema(),
         Survey::Askap => AskapAlertToFilter::get_schema(),
+        Survey::Argus => ARGUS_FILTER_SCHEMA.clone(),
     }
+}
+
+#[serdavro]
+#[derive(Debug, Deserialize, Serialize)]
+/// ARGUS data available at filtering time
+pub struct ArgusAlertToFilter {
+    pub candid: i64,
+    #[serde(rename = "objectId")]
+    pub object_id: String,
+    pub kind: String,
+    pub lane: String,
+    #[serde(rename = "alertCadence")]
+    pub alert_cadence: i32,
+    pub properties: ArgusAlertProperties,
+    pub coordinates: GalacticCoordinates,
+    pub prv_candidates: Vec<ArgusPhotometry>,
+    pub aliases: ArgusAliases,
+    #[serde(rename = "ZTF")]
+    pub ztf: Option<ZtfFilterMatch>,
+    #[serde(rename = "LSST")]
+    pub lsst: Option<LsstFilterMatch>,
+    pub host_galaxy: Option<HostGalaxyAssociation>,
+}
+
+static ARGUS_FILTER_SCHEMA: std::sync::LazyLock<apache_avro::Schema> =
+    std::sync::LazyLock::new(|| {
+        argus_filter_schema().expect("the bundled Argus schema must give a filter schema")
+    });
+
+fn argus_filter_schema() -> Result<apache_avro::Schema, String> {
+    let mut schema =
+        serde_json::to_value(ArgusAlertToFilter::get_schema()).map_err(|e| e.to_string())?;
+    let packet = serde_json::to_value(&*ARGUS_SCHEMA).map_err(|e| e.to_string())?;
+    let packet_field = |name: &str| {
+        packet["fields"]
+            .as_array()
+            .and_then(|fields| fields.iter().find(|field| field["name"] == name))
+            .cloned()
+            .ok_or_else(|| format!("{} is missing from the ARGUS packet schema", name))
+    };
+    let mut candidate = packet_field("candidate")?;
+    candidate["type"]["fields"]
+        .as_array_mut()
+        .ok_or("the ARGUS candidate is not a record")?
+        .push(serde_json::json!({"name": "jd", "type": "double"}));
+    let fields = schema["fields"]
+        .as_array_mut()
+        .ok_or("the ARGUS filter schema is not a record")?;
+    let at = fields
+        .iter()
+        .position(|field| field["name"] == "alertCadence")
+        .map_or(fields.len(), |index| index + 1);
+    fields.splice(
+        at..at,
+        [
+            candidate,
+            packet_field("eventAssociation")?,
+            packet_field("ssoAssociation")?,
+        ],
+    );
+    apache_avro::Schema::parse(&schema).map_err(|e| e.to_string())
 }
 
 /// Get a schema of a survey's data available at filtering time
@@ -1968,7 +2031,9 @@ pub async fn get_filter_schema(
     config: web::Data<AppConfig>,
 ) -> HttpResponse {
     let survey_name = path.into_inner().0;
-    let mut schema = serde_json::json!(filter_schema(&survey_name));
+    let avro = filter_schema(&survey_name);
+    let mut schema = serde_json::json!(avro);
+    with_field_docs(&avro, &mut schema);
     let catalogs = config
         .crossmatch
         .get(&survey_name)
@@ -1980,6 +2045,47 @@ pub async fn get_filter_schema(
         }
     }
     response::ok(&format!("avro schema for survey {}", survey_name), schema)
+}
+
+/// apache-avro serializes a record field without its `doc`, so copy each one back.
+fn with_field_docs(schema: &apache_avro::Schema, json: &mut serde_json::Value) {
+    use apache_avro::Schema;
+    match schema {
+        Schema::Record(record) => {
+            let Some(fields) = json
+                .get_mut("fields")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return;
+            };
+            for (field, value) in record.fields.iter().zip(fields.iter_mut()) {
+                if let Some(doc) = &field.doc {
+                    value["doc"] = serde_json::json!(doc);
+                }
+                if let Some(kind) = value.get_mut("type") {
+                    with_field_docs(&field.schema, kind);
+                }
+            }
+        }
+        Schema::Union(inner) => {
+            if let Some(variants) = json.as_array_mut() {
+                for (variant, value) in inner.variants().iter().zip(variants.iter_mut()) {
+                    with_field_docs(variant, value);
+                }
+            }
+        }
+        Schema::Array(inner) => {
+            if let Some(items) = json.get_mut("items") {
+                with_field_docs(&inner.items, items);
+            }
+        }
+        Schema::Map(inner) => {
+            if let Some(values) = json.get_mut("values") {
+                with_field_docs(&inner.types, values);
+            }
+        }
+        _ => {}
+    }
 }
 
 const CATALOG_SAMPLE_SIZE: i64 = 20;
